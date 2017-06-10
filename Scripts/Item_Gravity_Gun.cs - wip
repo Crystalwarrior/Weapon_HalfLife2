@@ -1,0 +1,290 @@
+datablock ItemData(hl2GravityGunItem) {
+	shapeFile = $hl2Weapons::Path @ "/models/gravity_gun.dts";
+	emap = true;
+
+	mass = 1;
+	density = 0.2;
+	friction = 0.6;
+	elasticity = 0.2;
+
+	uiName = "Gravity Gun";
+	iconName = "";
+
+	doColorShift = 1;
+	colorShiftColor = "1 0 0 1";
+
+	image = hl2GravityGunImage;
+	canDrop = true;
+};
+
+datablock ShapeBaseImageData(hl2GravityGunImage) {
+	shapeFile = hl2GravityGunItem.shapeFile;
+	emap = hl2GravityGunItem.emap;
+
+	mountPoint = 0;
+	offset = "0 0 0";
+
+	correctMuzzleVector = 0;
+	armReady = 1;
+
+	item = hl2GravityGunItem;
+	ammo = " ";
+
+	doColorShift = hl2GravityGunItem.doColorShift;
+	colorShiftColor = hl2GravityGunItem.colorShiftColor;
+
+	stateName[0] = "Activate";
+	stateTimeoutValue[0] = 0.015;
+	stateTransitionOnTimeout[0] = "Ready";
+
+	stateName[1] = "Ready";
+	stateAllowImageChange[1] = 1;
+	stateTransitionOnTriggerDown[1] = "Fire";
+
+	stateName[2] = "Fire";
+	stateScript[2] = "onPrimaryFire";
+	stateTransitionOnTriggerUp[2] = "Ready";
+};
+
+function hl2GravityGunImage::onUnMount(%this, %obj, %slot) {
+	if (isObject(%obj.hl2gravityGunTarget)) {
+		%obj.hl2gravityGunTarget = "";
+		cancel(%obj.hl2gravityGunTargetUpdate);
+	}
+}
+
+// because port is old and can't remember:
+// this flings aimed at object or held object
+
+function hl2GravityGunImage::onPrimaryFire(%this, %obj, %slot) {
+	if (isObject(%obj.hl2gravityGunTarget)) {
+		%col = %obj.hl2gravityGunTarget;
+		%obj.hl2gravityGunTarget = "";
+
+		cancel(%obj.hl2gravityGunTargetUpdate);
+	}
+	else {
+		%col = %this.getTargetObject(%obj, %slot, 25);
+
+		if (isObject(%col) && (%col.getType() & $TypeMasks::PlayerObjectType)) {
+			%mount = %col.getObjectMount();
+
+			if (isObject(%mount)) {
+				%col = %mount;
+			}
+		}
+	}
+
+	if (!isObject(%col)) {
+		return;
+	}
+
+	if (%col.getType() & $TypeMasks::StaticShapeObjectType) {
+		return;
+	}
+
+	if (%col.getType() & $TypeMasks::FxBrickObjectType) {
+		return;
+	}
+
+	if (%col.getType() & $TypeMasks::TerrainObjectType) {
+		return;
+	}
+
+	%point = %obj.getForwardVector();
+	%vector = %obj.getMuzzleVector(%slot);
+
+	%directionModifier = 0.75;
+
+	%minForce = 24;
+	%maxForce = 6;
+
+	%minMass = 90;
+	%maxMass = 1000;
+
+	%dataBlock = %col.getDataBlock();
+
+	if (%dataBlock.mass $= "" || %dataBlock.mass <= %minMass) {
+		%force = %minForce;
+	}
+	else if (%dataBlock.mass <= %maxMass) {
+		%force = mLerp(%minForce, %maxForce, mLerpFlip(%minMass, %maxMass, %dataBlock.mass));
+	}
+	else {
+		return;
+	}
+
+	%obj.client.bottomPrint(%force, 2);
+
+	%optimal = vectorNormalize(vectorSub(%col.getWorldBoxCenter(), %point));
+	%difference = vectorScale(vectorSub(%optimal, %vector), -%directionModifier);
+
+	%direction = vectorNormalize(vectorAdd(%vector, %difference));
+	%velocity = vectorAdd(vectorScale(%vector, %force), "0 0" SPC %force / 2);
+
+	// note: this will [s]FUCK UP[/s] do nothing with projectiles
+	// gotta write code for that but lazy :>
+
+	%col.setVelocity(%velocity);
+}
+
+// because port is old and can't remember:
+// this picks up aimed at object or drops held object
+
+function hl2GravityGunImage::onSecondaryFire(%this, %obj, %slot) {
+	if (isObject(%obj.hl2gravityGunTarget)) {
+		%obj.hl2gravityGunTarget = "";
+		cancel(%obj.hl2gravityGunTargetUpdate);
+
+		return;
+	}
+
+	%col = %this.getTargetObject(%obj, %slot, 50);
+
+	if (!isObject(%col)) {
+		return;
+	}
+
+	if (%col.getType() & $TypeMasks::StaticShapeObjectType) {
+		return;
+	}
+
+	if (%col.getType() & $TypeMasks::FxBrickObjectType) {
+		return;
+	}
+
+	if (%col.getType() & $TypeMasks::TerrainObjectType) {
+		return;
+	}
+
+	%obj.hl2gravityGunTarget = %col;
+	%obj.hl2gravityGunTargetUpdate();
+}
+
+function hl2GravityGunImage::getTargetObject(%this, %obj, %slot, %range) {
+	%point = %obj.getMuzzlePoint(%slot);
+	%vector = %obj.getMuzzleVector(%slot);
+
+	%end = vectorScale(%vector, %range);
+	%end = vectorAdd(%point, %end);
+
+	%mask = $TypeMasks::StaticShapeObjectType |
+	$TypeMasks::FxBrickObjectType |
+	$TypeMasks::TerrainObjectType |
+	$TypeMasks::VehicleObjectType |
+	$TypeMasks::PlayerObjectType;
+
+	%ray = containerRayCast(%point, %end, %mask, %obj);
+	%projectile = %this.findProjectileTarget(%obj, %slot, %range);
+
+	if (%ray $= 0) {
+		return getWord(%projectile, 0);
+	}
+	else if (%projectile $= 0) {
+		return getWord(%ray, 0);
+	}
+	else {
+		%d1 = vectorDist(%point, getWords(%ray, 1, 3));
+		%d2 = vectorDist(%point, getWords(%projectile, 1, 3));
+
+		if (%d2 < %d1) {
+			return getWord(%projectile, 0);
+		}
+		else {
+			return getWord(%ray, 0);
+		}
+	}
+}
+
+function hl2GravityGunImage::findProjectileTarget(%this, %obj, %slot, %range) {
+	%point = %obj.getMuzzlePoint(%slot);
+	%vector = %obj.getMuzzleVector(%slot);
+
+	initContainerRadiusSearch(%point, %range, $TypeMasks::ProjectileObjectType);
+
+	while (isObject(%col = containerSearchNext())) {
+		%optimal = vectorNormalize(vectorSub(%col.position, %point));
+		%dotted = vectorDot(%vector, %optimal);
+
+		if (%dotted < 0.85) {
+			continue;
+		}
+
+		%distance = containerSearchRadiusCurrDist();
+
+		if (%best $= "" || %distance < %best) {
+			%best = %distance;
+			%result = %col;
+		}
+	}
+
+	if (%result $= "") {
+		return 0;
+	}
+
+	return %result SPC %result.position;
+}
+
+function Player::hl2gravityGunTargetUpdate(%this) {
+	cancel(%this.hl2gravityGunTargetUpdate);
+
+	if (%this.getState() $= "Dead" || !isObject(%this.hl2gravityGunTarget)) {
+		%this.hl2gravityGunTarget = "";
+		return;
+	}
+
+	if (%this.hl2gravityGunTarget.getType() & $TypeMasks::PlayerObjectType) {
+		if (%this.hl2gravityGunTarget.getState() $= "Dead") {
+			%this.hl2gravityGunTarget = "";
+			return;
+		}
+	}
+
+	if (%this.hl2gravityGunTarget.hl2gravityGunTarget == %this || %this.getObjectMount() == %this.hl2gravityGunTarget) {
+		%this.hl2gravityGunTarget = "";
+		return;
+	}
+
+	if (%this.hl2gravityGunTarget.getType() & $TypeMasks::PlayerObjectType) {
+		%current = %this.hl2gravityGunTarget.getHackPosition();
+	}
+	else {
+		%current = %this.hl2gravityGunPosition.getPosition();
+	}
+
+	%optimal = vectorAdd(%this.getMuzzlePoint(0), vectorScale(%this.getMuzzleVector(0), 5));
+
+	%difference = vectorSub(%optimal, %current);
+	%velocity = vectorScale(%difference, 8);
+
+	%this.hl2gravityGunTarget.setVelocity(%velocity);
+	%this.hl2gravityGunTargetUpdate = %this.schedule(0, hl2gravityGunTargetUpdate);
+}
+
+function mLerp(%a, %b, %x) {
+	return %a + (%b - %a) * %x;
+}
+
+function mLerpFlip(%a, %b, %x) {
+	return (%x - %a) / (%b - %a);
+}
+
+package hl2GravityGunPackage {
+	function Armor::onTrigger(%this, %obj, %slot, %bool) {
+		parent::onTrigger(%this, %obj, %slot, %bool);
+
+		if (%obj.getState() $= "Dead" || %slot != 4 || !%bool) {
+			return;
+		}
+
+		for (%i = 0; %i < 4; %i++) {
+			%image = %obj.getMountedImage(%i);
+
+			if (%image == nameToID("hl2GravityGunImage")) {
+				%image.onSecondaryFire(%obj, %i);
+			}
+		}
+	}
+};
+
+activatePackage("hl2GravityGunPackage");
